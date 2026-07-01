@@ -1,0 +1,37 @@
+Cluster_ID,Mean_S_Score,Verdict
+0,0.012,Highly Selective
+12,0.0163,Highly Selective
+3,0.0436,Highly Selective
+17,0.0483,Highly Selective
+24,0.0627,Selective
+16,0.0634,Selective
+4,0.0668,Selective
+18,0.0678,Selective
+15,0.0872,Selective
+30,0.0874,Selective
+32,0.0907,Selective
+27,0.0914,Selective
+33,0.092,Selective
+28,0.0995,Selective
+21,0.1042,Selective
+9,0.1114,Selective
+20,0.1127,Selective
+19,0.1183,Selective
+25,0.1197,Selective
+1,0.1359,Selective
+14,0.1424,Selective
+29,0.144,Selective
+22,0.152,Promiscuous
+31,0.1528,Promiscuous
+23,0.154,Promiscuous
+13,0.1623,Promiscuous
+26,0.1635,Promiscuous
+5,0.172,Promiscuous
+10,0.1888,Promiscuous
+8,0.2055,Promiscuous
+34,0.2548,Promiscuous
+35,0.2823,Promiscuous
+7,0.3055,Promiscuous
+11,0.3168,Promiscuous
+6,0.3387,Promiscuous
+2,0.5573,Promiscuous
