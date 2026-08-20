@@ -1,0 +1,71 @@
+name: Wake HuKSA Space
+
+on:
+  schedule:
+    # GitHub cron has no rolling 40-hour interval. Run every 8 hours and
+    # allow one in every five UTC slots to perform the wake-up request.
+    - cron: "23 */8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wake-huksa-space
+  cancel-in-progress: false
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Select the 40-hour time slot
+        id: schedule
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "should_wake=true" >> "$GITHUB_OUTPUT"
+            echo "Manual wake-up requested."
+            exit 0
+          fi
+
+          # Round to the nearest 8-hour UTC slot so a modest Actions delay
+          # does not cause the intended 40-hour run to be skipped.
+          slot=$(( ($(date -u +%s) + 14400) / 28800 ))
+          if (( slot % 5 == 0 )); then
+            echo "should_wake=true" >> "$GITHUB_OUTPUT"
+            echo "This is the scheduled 40-hour wake-up slot."
+          else
+            echo "should_wake=false" >> "$GITHUB_OUTPUT"
+            echo "Intermediate 8-hour scheduler check. No request sent."
+          fi
+
+      - name: Wake the Space and wait for Streamlit
+        if: steps.schedule.outputs.should_wake == 'true'
+        shell: bash
+        env:
+          SPACE_URL: https://huksalab-tool.hf.space
+        run: |
+          echo "Sending wake-up request to $SPACE_URL"
+          curl --location --silent --show-error \
+            --connect-timeout 20 --max-time 60 \
+            --user-agent "HuKSA scheduled health check" \
+            --output /dev/null "$SPACE_URL/" || true
+
+          for attempt in {1..20}; do
+            status=$(curl --location --silent --show-error \
+              --connect-timeout 20 --max-time 60 \
+              --user-agent "HuKSA scheduled health check" \
+              --output /dev/null --write-out "%{http_code}" \
+              "$SPACE_URL/_stcore/health" || true)
+
+            if [[ "$status" == "200" ]]; then
+              echo "HuKSA is awake and healthy."
+              exit 0
+            fi
+
+            echo "Attempt $attempt/20 returned HTTP ${status:-000}. Retrying in 30 seconds."
+            sleep 30
+          done
+
+          echo "The Space did not become healthy within the polling window."
+          exit 1
