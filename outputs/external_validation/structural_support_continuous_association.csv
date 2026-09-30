@@ -1,0 +1,2 @@
+n,outcome,point_biserial_r,bootstrap_ci_low,bootstrap_ci_high,bootstrap_replicates
+125,top10_recovery,0.38859090088496856,0.2489050529009295,0.520200452042362,1000
