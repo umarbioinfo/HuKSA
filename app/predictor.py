@@ -78,7 +78,7 @@ class HuKSARx:
         if s != s: return "Unknown"
         return "Highly Selective" if s <= 0.05 else ("Selective" if s <= 0.15 else "Promiscuous")
 
-    def screen_row(self, smiles, k_target=5, k_sscore=15, min_support=2, target_gene=None):
+    def screen_row(self, smiles, k_target=5, k_sscore=5, min_support=2, target_gene=None):
         """Fast vectorized single-compound screen -> compact row dict (None if unparseable)."""
         q = morgan_fp(smiles)
         if q is None:
@@ -108,7 +108,7 @@ class HuKSARx:
             row[f"pAct[{target_gene}]"] = round(max(vals), 2) if vals else None
         return row
 
-    def predict(self, smiles, k_target=5, k_sscore=15, top_n=10, min_support=2):
+    def predict(self, smiles, k_target=5, k_sscore=5, top_n=10, min_support=2):
         qfp = morgan_fp(smiles)
         if qfp is None:
             return {"query_smiles": smiles, "valid": False, "error": "unparseable SMILES"}
@@ -129,8 +129,31 @@ class HuKSARx:
             col = sub[:, j]; ok = ~np.isnan(col)
             if ok.sum() >= min_support and tw[ok].sum() > 0:
                 score = float((tw[ok] * col[ok]).sum() / tw[ok].sum())
-                targets.append((self.col_gene[j], round(score, 2), int(ok.sum())))
-        targets.sort(key=lambda x: -x[1])
+                var = float((tw[ok] * (col[ok] - score) ** 2).sum() / tw[ok].sum())
+                sd = float(np.sqrt(max(var, 0.0)))
+                support = int(ok.sum())
+                evidence = [
+                    {
+                        "reference_id": f"Atlas {int(tidx[pos]) + 1}",
+                        "smiles": self.smiles[int(tidx[pos])],
+                        "tanimoto": round(float(tw[pos]), 3),
+                        "measured_pActivity": round(float(col[pos]), 3),
+                    }
+                    for pos in np.flatnonzero(ok)
+                ]
+                targets.append(
+                    {
+                        "gene": self.col_gene[j],
+                        "pred_pActivity": round(score, 2),
+                        "neighbours_measured": support,
+                        "support_fraction": round(support / k_target, 2),
+                        "weighted_sd": round(sd, 2),
+                        "measured_neighbours": evidence,
+                    }
+                )
+        targets.sort(key=lambda x: -x["pred_pActivity"])
+        rankable = len(targets)
+        total_kinases = int(self.M.shape[1])
 
         return {
             "query_smiles": smiles, "valid": True,
@@ -140,9 +163,16 @@ class HuKSARx:
                 "note": "predictions below 'Low' (NN<0.30) are out-of-domain and weakly supported",
             },
             "selectivity": {"s_score": round(s, 3) if s == s else None, "tier": self._tier(s)},
+            "prediction_coverage": {
+                "rankable_kinases": rankable,
+                "total_kinases": total_kinases,
+                "fraction": round(rankable / total_kinases, 3) if total_kinases else None,
+                "min_support": min_support,
+                "k_target": k_target,
+            },
             "predicted_targets": [
-                {"rank": i + 1, "gene": g, "pred_pActivity": sc, "neighbours_measured": n}
-                for i, (g, sc, n) in enumerate(targets[:top_n])
+                {"rank": i + 1, **target}
+                for i, target in enumerate(targets[:top_n])
             ],
         }
 

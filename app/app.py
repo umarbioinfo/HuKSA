@@ -52,9 +52,9 @@ with h_text:
         "<p class='huksa-tagline'>A ligand-based method that predicts a molecule's likely kinase "
         "targets and selectivity directly from its structure. For any SMILES, HuKSA infers the probable kinase "
         "targets from the measured activity of the query's nearest structural analogues among 794 kinome-profiled "
-        "compounds (464 kinases), and reports a coverage-robust selectivity score (S-score) together with an "
-        "explicit confidence flag (High, Moderate, Low or Outlier), so that every prediction is accompanied by "
-        "a measure of how far it can be trusted.</p>", unsafe_allow_html=True)
+        "compounds (464 kinases), and reports a measured-panel selectivity score (S-score) together with an "
+        "empirical structural-support band (High, Moderate, Low or Outlier). Each target result also shows "
+        "how many nearby compounds were measured and how much their activities differ.</p>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- assets
 @st.cache_resource(show_spinner="loading read-across engine…")
@@ -88,15 +88,18 @@ def bar(pact):
 
 def result_card(res, top_n=8):
     ad, sel = res["applicability_domain"], res["selectivity"]
+    cov = res.get("prediction_coverage", {})
     cb, ct = CONF.get(ad["confidence"], CONF["Low"])
     tb, tt = TIER.get(sel["tier"], TIER["Unknown"])
     low = ad["confidence"] in ("Low", "Outlier")
     rows = ""
+    target_grid = "88px minmax(120px, 1fr) 54px 72px 64px"
     for t in res["predicted_targets"][:top_n]:
-        rows += (f"<div style='display:grid; grid-template-columns:96px 1fr 40px 56px; align-items:center; gap:10px; font-size:13px; margin:4px 0;'>"
+        rows += (f"<div style='display:grid; grid-template-columns:{target_grid}; align-items:center; gap:8px; font-size:13px; padding:6px 0; border-bottom:1px solid #E8EDF2;'>"
                  f"<span style='font-weight:500;'>{t['gene']}</span>{bar(t['pred_pActivity'])}"
                  f"<span style='text-align:right; color:#5B6670;'>{t['pred_pActivity']:.1f}</span>"
-                 f"<span style='text-align:right; color:#9aa6b4; font-size:11px;'>n={t['neighbours_measured']}</span></div>")
+                 f"<span style='text-align:right; color:#6B7682; font-size:11px;'>{t['neighbours_measured']}/5</span>"
+                 f"<span style='text-align:right; color:#9aa6b4; font-size:11px;'>{t['weighted_sd']:.2f}</span></div>")
     warn = (f"<div style='font-size:12.5px; background:#FCEBEB; color:#791F1F; border-radius:8px; padding:9px 11px; margin:10px 0;'>"
             f"⚠ outside the applicability domain — the target ranking is unreliable; treat as a lead-only hint.</div>") if low else ""
     sval = f"{sel['s_score']:.3f}" if sel['s_score'] is not None else "—"
@@ -104,14 +107,42 @@ def result_card(res, top_n=8):
         f"<div class='rx-card'>"
         f"<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;'>"
         f"<span style='font-size:15px; font-weight:600;'>prediction</span>"
-        f"<span style='font-size:12px; padding:4px 12px; border-radius:8px; background:{cb}; color:{ct};'>{ad['confidence'].lower()} confidence</span></div>"
+        f"<span style='font-size:12px; padding:4px 12px; border-radius:8px; background:{cb}; color:{ct};'>{ad['confidence'].lower()} support</span></div>"
         f"<div style='display:flex; gap:20px; flex-wrap:wrap; font-size:13px; color:#5B6670; margin-bottom:12px;'>"
         f"<span>nearest analog · tanimoto <b style='color:#1A2027;'>{ad['nearest_neighbour_tanimoto']:.2f}</b></span>"
         f"<span>selectivity · S <b style='color:#1A2027;'>{sval}</b> "
-        f"<span style='font-size:12px; padding:2px 9px; border-radius:8px; background:{tb}; color:{tt};'>{sel['tier'].lower()}</span></span></div>"
+        f"<span style='font-size:12px; padding:2px 9px; border-radius:8px; background:{tb}; color:{tt};'>{sel['tier'].lower()}</span></span>"
+        f"<span>rankable kinases · <b style='color:#1A2027;'>{cov.get('rankable_kinases', '—')}/{cov.get('total_kinases', '—')}</b></span></div>"
         f"{warn}"
-        f"<div style='font-size:12px; color:#9aa6b4; margin-bottom:6px;'>predicted targets · weighted measured pActivity (k=5)</div>"
+        f"<div style='display:grid; grid-template-columns:{target_grid}; gap:8px; align-items:end; font-size:11px; color:#1A2027; font-weight:600; padding:0 0 7px 0; border-bottom:1px solid #CBD5DF; margin-bottom:0;'>"
+        f"<span>target</span><span></span><span style='text-align:right;'>pActivity</span>"
+        f"<span style='text-align:right;'>measured neighbours</span><span style='text-align:right;'>SD</span></div>"
         f"{rows}</div>", unsafe_allow_html=True)
+
+def target_table(res):
+    rows = pd.DataFrame(res["predicted_targets"])
+    if rows.empty:
+        return rows
+    rows = rows.rename(columns={
+        "rank": "Rank",
+        "gene": "Kinase",
+        "pred_pActivity": "Predicted pActivity",
+        "neighbours_measured": "Measured neighbours",
+        "support_fraction": "Support fraction",
+        "weighted_sd": "Neighbour SD",
+    })
+    rows["Measured neighbours"] = rows["Measured neighbours"].astype(str) + "/5"
+    rows["Structural support"] = res["applicability_domain"]["confidence"]
+    return rows[
+        [
+            "Rank",
+            "Kinase",
+            "Predicted pActivity",
+            "Measured neighbours",
+            "Neighbour SD",
+            "Structural support",
+        ]
+    ]
 
 def atlas_map(query_xy=None):
     fig = px.scatter(ATLAS, x="UMAP_1", y="UMAP_2", color="S_Score",
@@ -171,12 +202,34 @@ with tab1:
                 xy = query_map_xy(smiles.strip())
                 st.plotly_chart(atlas_map(xy), use_container_width=True)
             with st.expander("full ranked target list (top 10) + how this works"):
-                st.dataframe(pd.DataFrame(res["predicted_targets"]), hide_index=True, use_container_width=True)
+                cov = res.get("prediction_coverage", {})
+                if cov:
+                    st.caption(
+                        f"{cov['rankable_kinases']} of {cov['total_kinases']} kinases were rankable "
+                        f"for this query using at least {cov['min_support']} measured neighbours among k={cov['k_target']}."
+                    )
+                st.dataframe(target_table(res), hide_index=True, use_container_width=True)
+                targets = res["predicted_targets"]
+                if targets:
+                    selected = st.selectbox(
+                        "Inspect measured neighbours for target",
+                        range(len(targets)),
+                        format_func=lambda i: f"{targets[i]['rank']}. {targets[i]['gene']}",
+                    )
+                    evidence = pd.DataFrame(targets[selected]["measured_neighbours"])
+                    evidence = evidence.rename(columns={
+                        "reference_id": "Atlas ID",
+                        "smiles": "Reference SMILES",
+                        "tanimoto": "Tanimoto",
+                        "measured_pActivity": "Measured pActivity",
+                    })
+                    st.dataframe(evidence, hide_index=True, use_container_width=True)
                 st.caption("Targets are predicted by Tanimoto-weighted read-across over the query's nearest "
-                           "neighbours' measured kinase activity (no clustering). Confidence = nearest-neighbour "
-                           "Tanimoto. Selectivity = read-across S-score. Validation (out-of-sample): the known "
-                           "target is in the top-10 ~50% of the time and the confidence flag is calibrated — "
-                           "trust High/Moderate, treat Low/Outlier as a hint only.")
+                           "neighbours' measured kinase activity. Measured neighbours shows how many of the "
+                           "five neighbours had data for that kinase. Neighbour SD reports the weighted spread "
+                           "of those measured activities, not a prediction interval. Atlas IDs identify the "
+                           "bundled reference structures. Structural support comes from the nearest-neighbour "
+                           "Tanimoto band and is not a probability.")
     elif go_btn:
         st.warning("Enter a SMILES string first.")
 
@@ -184,7 +237,7 @@ with tab1:
 with tab2:
     st.markdown("##### Screen a library")
     st.caption("Paste SMILES (one per line) or upload a CSV with a SMILES column. Each molecule is scored "
-               "by read-across; rank by selectivity, filter by confidence, or rank by predicted activity "
+               "by read-across; rank by selectivity, filter by structural support, or rank by predicted activity "
                "against a chosen kinase. Up to 100,000 molecules (large libraries take ~1 min per 50k).")
     col_in, col_opt = st.columns([3, 2])
     with col_in:
@@ -194,7 +247,7 @@ with tab2:
     with col_opt:
         target = st.selectbox("rank by predicted activity for a kinase (optional)",
                               ["— overall (most selective first) —"] + rx.genes)
-        only_domain = st.checkbox("keep only in-domain hits (High/Moderate confidence)", value=False)
+        only_domain = st.checkbox("keep only High/Moderate structural-support hits", value=False)
         run = st.button("Screen library", type="primary", use_container_width=True)
 
     if run:
@@ -252,6 +305,7 @@ with tab2:
             st.dataframe(df, use_container_width=True)
             st.download_button("⬇ download results (CSV)", df.to_csv(index=False).encode(),
                                "huksa_rx_screen.csv", "text/csv")
-            st.caption("Predicted pActivity > 6 ≈ sub-µM engagement. Trust **High/Moderate** confidence rows; "
-                       "**Low/Outlier** are out-of-domain guesses. A blank kinase column means that kinase was "
-                       "not measured among the molecule's nearest neighbours.")
+            st.caption("Predicted pActivity > 6 corresponds to sub-micromolar potency on the model's scale. "
+                       "High/Moderate structural support indicates closer atlas analogues, not confirmed activity. "
+                       "A blank kinase value means fewer than two of the five nearest atlas compounds "
+                       "were measured at that kinase.")
